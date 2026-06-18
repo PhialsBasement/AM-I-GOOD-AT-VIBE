@@ -23,7 +23,7 @@ import { CodeChangeCapture } from "./capture/codeChange";
 import { OwnChatCapture } from "./chat/ownChatParticipant";
 import { HabitAnalyzer } from "./analyzer/runAnalysis";
 import { SidebarWebviewProvider } from "./webview/sidebar";
-import { collectExtensionChatTurns, sqlite3Available } from "./extensionCache";
+import { collectExtensionChatTurns } from "./extensionCache";
 import {
   LogEntry,
   extractedTurnToLogEntry,
@@ -136,13 +136,6 @@ export function activate(ctx: vscode.ExtensionContext): void {
       );
     }),
     vscode.commands.registerCommand("amigoodatvibe.importExtensionCache", async () => {
-      if (!sqlite3Available()) {
-        vscode.window.showWarningMessage(
-          `${EXTENSION_DISPLAY_NAME}: the system \`sqlite3\` CLI was not found on PATH. ` +
-          "macOS / Linux ship it by default; on Windows, install it from sqlite.org."
-        );
-        return;
-      }
       const before = store.stats().aiChats;
       const fallbackSessionId = randomSessionId();
       const diagnostics: string[] = [];
@@ -183,9 +176,6 @@ export function activate(ctx: vscode.ExtensionContext): void {
       // persist these external turns to raw_history.json — keeping the file
       // small and avoiding the previous failure mode where a huge sync flush
       // would silently drop turns.
-      if (!sqlite3Available()) {
-        log("[analyzeFromClaudeLog] sqlite3 missing — skipping SQLite sources but Claude Code JSONL still works");
-      }
       const report = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,

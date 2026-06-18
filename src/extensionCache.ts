@@ -13,8 +13,9 @@
  *             `workbench.panel.aichat.view.aichat.chatdata`)
  *
  * Trade-offs:
- *   - Shells out to the system `sqlite3` CLI to avoid native deps. macOS / Linux
- *     ship it; on Windows the import becomes a no-op with a clear diagnostic.
+ *   - Reads the SQLite file format directly via a tiny pure-JS parser
+ *     (./sqliteReader) — no native module and no external `sqlite3` CLI, so it
+ *     works identically on macOS, Linux, and Windows.
  *   - Stored value formats are best-effort and may drift between extension
  *     versions — parsers are defensive (return [] on unknown shapes).
  */
@@ -23,7 +24,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { execFileSync } from "child_process";
+import { readTableRows } from "./sqliteReader";
 
 // =============================================================================
 // IDE user-data root discovery
@@ -405,70 +406,49 @@ export function readChatSessionFiles(dir: string): ExtractedTurn[] {
 }
 
 // =============================================================================
-// SQLite reader — system `sqlite3` CLI shell-out (no native dep)
+// SQLite reader — pure-JS file-format parser (no native dep, no `sqlite3` CLI)
 // =============================================================================
 
-let sqlite3Cached: boolean | null = null;
-
-/** Whether a usable `sqlite3` CLI is on PATH. Result is cached per-process. */
+/**
+ * Always `true`: chat-cache reading no longer depends on an external `sqlite3`
+ * binary (it parses the SQLite file format directly in JS), so the capability
+ * is available on every platform, Windows included. Kept as a named export so
+ * callers / diagnostics that previously gated on CLI availability keep working.
+ */
 export function sqlite3Available(): boolean {
-  if (sqlite3Cached !== null) return sqlite3Cached;
-  try {
-    execFileSync("sqlite3", ["--version"], { stdio: ["ignore", "ignore", "ignore"] });
-    sqlite3Cached = true;
-  } catch {
-    sqlite3Cached = false;
-  }
-  return sqlite3Cached;
+  return true;
 }
 
-/** Reset the cached `sqlite3` availability — exposed for tests. */
+/** No-op retained for test back-compat (there is no longer a cache to reset). */
 export function resetSqlite3AvailabilityCache(): void {
-  sqlite3Cached = null;
+  /* intentionally empty */
 }
-
-const ROW_SEP = "AMIGOOD_ROW";
-const COL_SEP = "AMIGOOD_COL";
 
 /**
  * Read the specified keys from a VS Code-style `state.vscdb` (table
  * `ItemTable(key TEXT, value BLOB)`). Returns `Map<key, raw string>`.
- * Missing file / sqlite3 / IO error → empty Map.
+ * Missing file / unreadable DB / IO error yields an empty Map.
  */
 export function readChatKeysFromDb(dbPath: string, keys: string[]): Map<string, string> {
   const result = new Map<string, string>();
   if (keys.length === 0) return result;
   if (!fs.existsSync(dbPath)) return result;
-  if (!sqlite3Available()) return result;
 
-  const inClause = keys.map((k) => `'${k.replace(/'/g, "''")}'`).join(",");
-  const sql =
-    `SELECT key || '${COL_SEP}' || value || '${ROW_SEP}' ` +
-    `FROM ItemTable WHERE key IN (${inClause});`;
-
-  let stdout = "";
+  const wanted = new Set(keys);
+  let rows: ReturnType<typeof readTableRows>;
   try {
-    stdout = execFileSync("sqlite3", ["-readonly", "-bail", dbPath, sql], {
-      encoding: "utf8",
-      maxBuffer: 256 * 1024 * 1024,
-      // Silence sqlite3 stderr; we treat any failure as "no data".
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    rows = readTableRows(dbPath, "ItemTable");
   } catch {
+    // Not a SQLite file, missing ItemTable, or a format we cannot parse: no data.
     return result;
   }
 
-  for (const rawRow of stdout.split(ROW_SEP)) {
-    // sqlite3 CLI emits a trailing newline after each row; that newline ends
-    // up at the *start* of the next chunk once we split on ROW_SEP. Strip it
-    // so it doesn't get glued onto the key.
-    const row = rawRow.replace(/^\r?\n/, "");
-    if (!row) continue;
-    const ix = row.indexOf(COL_SEP);
-    if (ix < 0) continue;
-    const key = row.slice(0, ix);
-    const value = row.slice(ix + COL_SEP.length);
-    if (value) result.set(key, value);
+  for (const row of rows) {
+    // ItemTable columns: [key TEXT, value BLOB]. Both decode to strings here.
+    const key = row[0];
+    const value = row[1];
+    if (typeof key !== "string" || !wanted.has(key)) continue;
+    if (typeof value === "string" && value) result.set(key, value);
   }
   return result;
 }

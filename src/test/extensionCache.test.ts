@@ -15,7 +15,6 @@ import assert from "node:assert/strict";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { execFileSync } from "child_process";
 
 import {
   claudeCodeProjectDirName,
@@ -33,10 +32,9 @@ import {
   readChatKeysFromDb,
   readChatSessionFiles,
   readClaudeCodeSessions,
-  resetSqlite3AvailabilityCache,
-  sqlite3Available,
   workspaceFolderHash,
 } from "../extensionCache";
+import { E2E_VSCDB_B64, ROUND_TRIP_VSCDB_B64 } from "./fixtures";
 
 // =============================================================================
 // (1) Parser fixtures
@@ -210,42 +208,43 @@ test("ideRootCandidates: Windows uses APPDATA", () => {
 });
 
 // =============================================================================
-// (4) Integration: real sqlite3 round-trip
+// (4) Integration: pure-JS SQLite reader round-trip
+//
+// These read real `state.vscdb` files (base64 binary fixtures), so they run on
+// every platform with no `sqlite3` CLI — the cross-platform path the reader
+// exists to support. Write a fixture DB into a tempdir from base64.
 // =============================================================================
 
-const HAS_SQLITE3 = (() => {
-  resetSqlite3AvailabilityCache();
-  return sqlite3Available();
-})();
+function writeFixtureDb(tmpDir: string, b64: string): string {
+  const db = path.join(tmpDir, "state.vscdb");
+  fs.writeFileSync(db, Buffer.from(b64, "base64"));
+  return db;
+}
 
 test("readChatKeysFromDb: returns empty Map for missing file", () => {
   const m = readChatKeysFromDb("/this/path/does/not/exist.vscdb", ["interactive.sessions"]);
   assert.equal(m.size, 0);
 });
 
-test("readChatKeysFromDb: round-trips known keys from a real state.vscdb", { skip: !HAS_SQLITE3 }, () => {
+test("readChatKeysFromDb: returns empty Map for a non-SQLite file", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "amigoodatvibe-extcache-"));
-  const db = path.join(tmp, "state.vscdb");
-  const fixture = [
-    {
-      sessionId: "round-trip",
-      creationDate: 1_700_000_000_000,
-      requests: [
-        { message: { text: "round-trip user" }, response: [{ value: "round-trip assistant" }] },
-      ],
-    },
-  ];
-  const initSql = `
-    CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
-    INSERT INTO ItemTable(key, value) VALUES('interactive.sessions', '${JSON.stringify(fixture).replace(/'/g, "''")}');
-    INSERT INTO ItemTable(key, value) VALUES('aiService.prompts', '${JSON.stringify([{ text: "cursor user" }]).replace(/'/g, "''")}');
-  `;
-  execFileSync("sqlite3", [db, initSql], { stdio: "ignore" });
+  const junk = path.join(tmp, "state.vscdb");
+  fs.writeFileSync(junk, "this is not a sqlite database");
+  const m = readChatKeysFromDb(junk, ["interactive.sessions"]);
+  assert.equal(m.size, 0);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("readChatKeysFromDb: round-trips known keys from a real state.vscdb", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "amigoodatvibe-extcache-"));
+  const db = writeFixtureDb(tmp, ROUND_TRIP_VSCDB_B64);
 
   const m = readChatKeysFromDb(db, ["interactive.sessions", "aiService.prompts", "missing.key"]);
   assert.equal(m.size, 2);
   const parsed = JSON.parse(m.get("interactive.sessions")!);
   assert.equal(parsed[0].sessionId, "round-trip");
+  const cursor = JSON.parse(m.get("aiService.prompts")!);
+  assert.equal(cursor[0].text, "cursor user");
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -461,7 +460,7 @@ test("collectExtensionChatTurns: discovers Claude Code sessions via $HOME overri
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test("collectExtensionChatTurns: end-to-end with masker", { skip: !HAS_SQLITE3 }, () => {
+test("collectExtensionChatTurns: end-to-end with masker", () => {
   // Build a fake IDE userRoot under tmpdir matching the live layout
   //   <tmp>/User/workspaceStorage/<hash>/state.vscdb
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "amigoodatvibe-extcache-e2e-"));
@@ -472,28 +471,11 @@ test("collectExtensionChatTurns: end-to-end with masker", { skip: !HAS_SQLITE3 }
   const wsHash = workspaceFolderHash(wsPath);
   const wsStorage = path.join(userRoot, "workspaceStorage", wsHash);
   fs.mkdirSync(wsStorage, { recursive: true });
-  const dbPath = path.join(wsStorage, "state.vscdb");
-
-  const copilotFixture = [
-    {
-      sessionId: "S1",
-      requests: [
-        {
-          message: { text: "OPENAI=sk-abcdefghijklmnopqrstuvwxyz0123 ship it" },
-          response: [{ value: "okay, but mask your key next time" }],
-        },
-      ],
-    },
-  ];
-  const cursorFixture = [{ text: "refactor this method" }];
-
-  const initSql = `
-    CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
-    INSERT INTO ItemTable VALUES('interactive.sessions', '${JSON.stringify(copilotFixture).replace(/'/g, "''")}');
-    INSERT INTO ItemTable VALUES('aiService.prompts', '${JSON.stringify(cursorFixture).replace(/'/g, "''")}');
-    INSERT INTO ItemTable VALUES('unrelated.key', 'noise');
-  `;
-  execFileSync("sqlite3", [dbPath, initSql], { stdio: "ignore" });
+  // Seed the per-workspace DB from the binary fixture. It carries:
+  //   interactive.sessions → Copilot session with an unmasked `sk-...` key
+  //   aiService.prompts     → Cursor prompt "refactor this method"
+  //   unrelated.key         → 'noise' (must be ignored)
+  fs.writeFileSync(path.join(wsStorage, "state.vscdb"), Buffer.from(E2E_VSCDB_B64, "base64"));
 
   // Also seed a chatSessions/*.jsonl file (modern VS Code GUI chat path).
   const chatSessionsDir = path.join(wsStorage, "chatSessions");

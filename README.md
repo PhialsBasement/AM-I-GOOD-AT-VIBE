@@ -21,7 +21,7 @@ This is the **first public release**. I (the author) have only been able to veri
 | Tested on | Status |
 |---|---|
 | macOS + VS Code 1.93+ + Claude Code v0.1 | ✅ Works |
-| Windows | ❓ Unverified (SQLite chat-cache import is disabled on Windows by design; capture itself should still work) |
+| Windows | ✅ Cross-platform (SQLite chat-cache import now uses a built-in pure-JS reader — no `sqlite3` CLI needed) |
 | Linux | ✅ Works |
 | Codex / Gemini / aider / Copilot / Cody / Cursor CLIs | ❓ Pattern matching exists but not tested end-to-end |
 | Cursor IDE | ❓ Chat-cache paths defined but unverified |
@@ -80,7 +80,7 @@ The capture file `<workspace>/.am-i-good-at-vibe/raw_history.json` is created. T
 
 - **VS Code 1.93+** (Shell Integration is on by default; required for the most accurate capture path).
 - **A local AI CLI** — defaults to `claude`. Configurable via `amigoodatvibe.localCliTool` (e.g. `codex`, `gemini`).
-- **macOS recommended.** The SQLite-based IDE chat-cache importer (Copilot / Cursor) is a no-op on Windows; terminal capture should still work cross-platform but isn't verified yet.
+- **Cross-platform.** The SQLite-based IDE chat-cache importer (Copilot / Cursor) reads `state.vscdb` directly via a built-in pure-JS reader, so it works on macOS, Linux, and Windows with no `sqlite3` CLI dependency.
 
 ---
 
@@ -181,8 +181,7 @@ Full system instruction lives in [src/prompt.ts](src/prompt.ts).
 
 ## 🐞 Known limitations
 
-- **macOS-only verified** — see Beta status above.
-- **Windows IDE-cache import is disabled** — the SQLite import path shells out to the system `sqlite3` CLI; Windows ships without it, so that command becomes a no-op. Terminal capture is unaffected.
+- **Primarily verified on macOS / Linux** — see Beta status above. Windows IDE-cache import now works via the built-in reader, but broader Windows end-to-end testing is still welcome.
 - **Interactive REPLs need Shell Integration** — without it, REPL turn-by-turn parsing degrades to best-effort line classification.
 - **The opt-in 100% Capture Terminal isn't a real PTY** — raw TUI apps (the `claude` REPL with full-screen UI, vim, etc.) won't render correctly inside it. Use it for one-shot commands.
 - **External terminals (Terminal.app, iTerm, Warp) aren't captured** — they're outside VS Code's process tree.
